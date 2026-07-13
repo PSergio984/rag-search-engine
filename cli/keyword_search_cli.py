@@ -323,6 +323,52 @@ def idf_command(term: str) -> None:
     print(f"Inverse document frequency of '{term}': {idf:.2f}")
 
 
+def tfidf_command(doc_id: int, term: str) -> None:
+    """
+    Look up and print the TF-IDF score for a given term in a specific document.
+
+    TF-IDF is the product of term frequency (TF) and inverse document frequency (IDF).
+    This combines how often a term appears in a document with how rare it is across
+    all documents to produce a relevance score.
+
+    Flow:
+    1. Instantiate a new InvertedIndex and load its serialized files.
+    2. Attempt to tokenize the search term using the tokenize_term helper.
+    3. If tokenization raises an exception, print 0.00 and exit.
+    4. Calculate TF via get_tf and IDF via the smoothed log formula.
+    5. Print the TF-IDF value formatted to 2 decimal places.
+    """
+    # Create an InvertedIndex instance
+    idx = InvertedIndex()
+    try:
+        # Load the index, docmap, and term frequencies from disk
+        idx.load()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return
+
+    try:
+        # Preprocess and validate that the term tokenizes to exactly one token
+        token = tokenize_term(term)
+    except ValueError:
+        # If the term does not resolve to exactly one token, its TF-IDF is 0
+        print(0.00)
+        return
+
+    # Calculate term frequency for the token in the given document
+    tf = idx.get_tf(doc_id, token)
+    # Total number of documents in the dataset
+    total_docs = len(idx.docmap)
+    # Number of documents that contain this token (from the inverted index)
+    match_count = len(idx.index.get(token, set()))
+    # Calculate IDF using smoothed log formula to avoid division by zero
+    idf = math.log((total_docs + 1) / (match_count + 1))
+    # TF-IDF is the product of term frequency and inverse document frequency
+    tf_idf = tf * idf
+    # Print the result formatted to 2 decimal places
+    print(f"TF-IDF score of '{term}' in document '{doc_id}': {tf_idf:.2f}")
+
+
 # ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
@@ -344,6 +390,10 @@ def main() -> None:
     idf_parser = subparsers.add_parser("idf", help="Get inverse document frequency for a term")
     idf_parser.add_argument("term", type=str, help="Term to calculate IDF for")
 
+    tfidf_parser = subparsers.add_parser("tfidf", help="Get TF-IDF score for a term in a document")
+    tfidf_parser.add_argument("doc_id", type=int, help="Document ID")
+    tfidf_parser.add_argument("term", type=str, help="Term to score")
+
     args = parser.parse_args()
 
     match args.command:
@@ -361,6 +411,8 @@ def main() -> None:
             tf_command(args.doc_id, args.term)
         case "idf":
             idf_command(args.term)
+        case "tfidf":
+            tfidf_command(args.doc_id, args.term)
         case _:
             parser.print_help()
 
