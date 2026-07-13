@@ -18,6 +18,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 STOPWORDS_PATH = DATA_DIR / "stopwords.txt"
 DEFAULT_SEARCH_LIMIT = 5
+# BM25 tunable parameters: k1 controls term frequency saturation, b controls document length normalization
 BM25_K1 = 1.5
 BM25_B = 0.75
 
@@ -396,8 +397,17 @@ def bm25_idf_command(term: str) -> float:
 
 
 def bm25_tf_command(doc_id: int, term: str, k1: float = BM25_K1) -> float:
-    """Return the BM25 TF score for a given term in a specific document."""
-    # Instantiate the inverted index and load serialized data from disk
+    """
+    Return the BM25 TF score for a given term in a specific document.
+
+    Flow:
+    1. Instantiate InvertedIndex and load serialized files from disk.
+    2. Tokenize the search term using the single-term helper.
+    3. If tokenization fails (stop word, empty, multi-word), return 0.0.
+    4. Delegate to get_bm25_tf which applies saturation + length normalization.
+    5. Return the BM25 TF score as a float.
+    """
+    # Load the pre-built inverted index from cache
     idx = InvertedIndex()
     try:
         idx.load()
@@ -406,13 +416,13 @@ def bm25_tf_command(doc_id: int, term: str, k1: float = BM25_K1) -> float:
         return 0.0
 
     try:
-        # Tokenize the term to a single stemmed token
+        # Preprocess and validate that the term tokenizes to exactly one token
         token = tokenize_term(term)
     except ValueError:
-        # If term does not resolve to exactly one token, score is 0
+        # If the term does not resolve to exactly one token, its BM25 TF is 0
         return 0.0
 
-    # Delegate to the InvertedIndex method which computes the BM25 TF score
+    # Compute BM25 TF via the InvertedIndex method (saturation + length normalization)
     return idx.get_bm25_tf(doc_id, token, k1)
 
 
