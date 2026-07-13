@@ -140,6 +140,23 @@ class InvertedIndex:
         doc_ids = self.index.get(term, set())
         return sorted(list(doc_ids))
 
+    def get_bm25_idf(self, term: str) -> float:
+        """Calculate the BM25 IDF score for a single token.
+
+        IDF = log((N - df + 0.5) / (df + 0.5) + 1)
+
+        Where:
+            N   = total number of documents
+            df  = number of documents containing the term
+        """
+        # Total number of documents in the collection
+        n = len(self.docmap)
+        # Number of documents that contain this term (document frequency)
+        df = len(self.index.get(term, set()))
+        # BM25 IDF formula with Laplace smoothing to prevent division by zero
+        # and ensure IDF is always positive
+        return math.log((n - df + 0.5) / (df + 0.5) + 1)
+
     def get_tf(self, doc_id: int, term: str) -> int:
         """
         Return how many times the token appears in the document with the given ID.
@@ -323,6 +340,27 @@ def idf_command(term: str) -> None:
     print(f"Inverse document frequency of '{term}': {idf:.2f}")
 
 
+def bm25_idf_command(term: str) -> float:
+    """Return the BM25 IDF score for a given term."""
+    # Instantiate the inverted index and load serialized data from disk
+    idx = InvertedIndex()
+    try:
+        idx.load()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return 0.0
+
+    try:
+        # Tokenize the term to a single stemmed token (fails for stopwords, empty, or multi-word input)
+        token = tokenize_term(term)
+    except ValueError:
+        # If term does not resolve to exactly one token, score is 0
+        return 0.0
+
+    # Delegate to the InvertedIndex method which computes the BM25 IDF score
+    return idx.get_bm25_idf(token)
+
+
 def tfidf_command(doc_id: int, term: str) -> None:
     """
     Look up and print the TF-IDF score for a given term in a specific document.
@@ -394,6 +432,10 @@ def main() -> None:
     tfidf_parser.add_argument("doc_id", type=int, help="Document ID")
     tfidf_parser.add_argument("term", type=str, help="Term to score")
 
+    # Register the bm25idf subcommand to compute BM25 IDF for a single term
+    bm25_idf_parser = subparsers.add_parser("bm25idf", help="Get BM25 IDF score for a given term")
+    bm25_idf_parser.add_argument("term", type=str, help="Term to get BM25 IDF score for")
+
     args = parser.parse_args()
 
     match args.command:
@@ -413,6 +455,10 @@ def main() -> None:
             idf_command(args.term)
         case "tfidf":
             tfidf_command(args.doc_id, args.term)
+        case "bm25idf":
+            # Compute BM25 IDF via the command function and print formatted to 2 decimal places
+            bm25idf = bm25_idf_command(args.term)
+            print(f"BM25 IDF score of '{args.term}': {bm25idf:.2f}")
         case _:
             parser.print_help()
 
