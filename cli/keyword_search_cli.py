@@ -18,6 +18,8 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 STOPWORDS_PATH = DATA_DIR / "stopwords.txt"
 DEFAULT_SEARCH_LIMIT = 5
+BM25_K1 = 1.5
+BM25_B = 0.75
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,38 @@ class InvertedIndex:
         # BM25 IDF formula with Laplace smoothing to prevent division by zero
         # and ensure IDF is always positive
         return math.log((n - df + 0.5) / (df + 0.5) + 1)
+
+    def get_bm25_tf(self, doc_id: int, term: str, k1: float = BM25_K1) -> float:
+        """Calculate the BM25 term frequency saturation score.
+
+        tf_component = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * |d| / avgdl))
+
+        Where:
+            tf      = raw term frequency
+            k1      = tunable saturation parameter (default 1.5)
+            b       = length normalization parameter (default 0.75)
+            |d|     = length of this document in tokens
+            avgdl   = average document length across all documents
+        """
+        # Get the raw term frequency for this term in the given document
+        tf = self.get_tf(doc_id, term)
+
+        # Compute the length of this document
+        doc_counter = self.term_frequencies.get(doc_id)
+        doc_len = sum(doc_counter.values()) if doc_counter else 0
+
+        # Compute the average document length (cached after first call)
+        if not hasattr(self, '_avg_doc_len'):
+            if self.term_frequencies:
+                total = sum(sum(c.values()) for c in self.term_frequencies.values())
+                self._avg_doc_len = total / len(self.term_frequencies)
+            else:
+                self._avg_doc_len = 1.0
+
+        # Apply BM25 saturation formula with document length normalization
+        ratio = doc_len / self._avg_doc_len
+        K = k1 * (1 - BM25_B + BM25_B * ratio)
+        return (tf * (k1 + 1)) / (tf + K)
 
     def get_tf(self, doc_id: int, term: str) -> int:
         """
@@ -361,6 +395,27 @@ def bm25_idf_command(term: str) -> float:
     return idx.get_bm25_idf(token)
 
 
+def bm25_tf_command(doc_id: int, term: str, k1: float = BM25_K1) -> float:
+    """Return the BM25 TF score for a given term in a specific document."""
+    # Instantiate the inverted index and load serialized data from disk
+    idx = InvertedIndex()
+    try:
+        idx.load()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return 0.0
+
+    try:
+        # Tokenize the term to a single stemmed token
+        token = tokenize_term(term)
+    except ValueError:
+        # If term does not resolve to exactly one token, score is 0
+        return 0.0
+
+    # Delegate to the InvertedIndex method which computes the BM25 TF score
+    return idx.get_bm25_tf(doc_id, token, k1)
+
+
 def tfidf_command(doc_id: int, term: str) -> None:
     """
     Look up and print the TF-IDF score for a given term in a specific document.
@@ -436,6 +491,12 @@ def main() -> None:
     bm25_idf_parser = subparsers.add_parser("bm25idf", help="Get BM25 IDF score for a given term")
     bm25_idf_parser.add_argument("term", type=str, help="Term to get BM25 IDF score for")
 
+    # Register the bm25tf subcommand to compute BM25 TF for a term in a document
+    bm25_tf_parser = subparsers.add_parser("bm25tf", help="Get BM25 TF score for a given document ID and term")
+    bm25_tf_parser.add_argument("doc_id", type=int, help="Document ID")
+    bm25_tf_parser.add_argument("term", type=str, help="Term to get BM25 TF score for")
+    bm25_tf_parser.add_argument("k1", type=float, nargs='?', default=BM25_K1, help="Tunable BM25 K1 parameter")
+
     args = parser.parse_args()
 
     match args.command:
@@ -459,6 +520,10 @@ def main() -> None:
             # Compute BM25 IDF via the command function and print formatted to 2 decimal places
             bm25idf = bm25_idf_command(args.term)
             print(f"BM25 IDF score of '{args.term}': {bm25idf:.2f}")
+        case "bm25tf":
+            # Compute BM25 TF via the command function and print formatted to 2 decimal places
+            bm25tf = bm25_tf_command(args.doc_id, args.term, args.k1)
+            print(f"BM25 TF score of '{args.term}' in document '{args.doc_id}': {bm25tf:.2f}")
         case _:
             parser.print_help()
 
