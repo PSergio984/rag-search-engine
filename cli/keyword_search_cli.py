@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import pickle
 import string
@@ -284,6 +285,44 @@ def tf_command(doc_id: int, term: str) -> None:
     print(tf)
 
 
+def idf_command(term: str) -> None:
+    """
+    Look up and print the inverse document frequency (IDF) for a given term.
+
+    Flow:
+    1. Instantiate a new InvertedIndex and load its serialized files.
+    2. Attempt to tokenize the search term using the tokenize_term helper.
+    3. If tokenization raises an exception, print 0.00 and exit.
+    4. Calculate IDF = log((total_doc_count + 1) / (term_match_doc_count + 1)).
+    5. Print the IDF value formatted to 2 decimal places.
+    """
+    # Create an InvertedIndex instance
+    idx = InvertedIndex()
+    try:
+        # Load the index, docmap, and term frequencies from disk
+        idx.load()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return
+
+    try:
+        # Preprocess and validate that the term tokenizes to exactly one token
+        token = tokenize_term(term)
+    except ValueError:
+        # If the term does not resolve to exactly one token, its IDF is effectively 0
+        print(0.00)
+        return
+
+    # Total number of documents in the dataset
+    total_docs = len(idx.docmap)
+    # Number of documents that contain this token (from the inverted index)
+    match_count = len(idx.index.get(token, set()))
+    # Calculate IDF using smoothed log formula to avoid division by zero
+    idf = math.log((total_docs + 1) / (match_count + 1))
+    # Print the result formatted to 2 decimal places
+    print(f"Inverse document frequency of '{term}': {idf:.2f}")
+
+
 # ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
@@ -302,6 +341,9 @@ def main() -> None:
     tf_parser.add_argument("doc_id", type=int, help="Document ID")
     tf_parser.add_argument("term", type=str, help="Term to count")
 
+    idf_parser = subparsers.add_parser("idf", help="Get inverse document frequency for a term")
+    idf_parser.add_argument("term", type=str, help="Term to calculate IDF for")
+
     args = parser.parse_args()
 
     match args.command:
@@ -317,6 +359,8 @@ def main() -> None:
         case "tf":
             # Call tf_command to print the frequency of the term in the document
             tf_command(args.doc_id, args.term)
+        case "idf":
+            idf_command(args.term)
         case _:
             parser.print_help()
 
