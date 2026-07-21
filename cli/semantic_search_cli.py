@@ -4,64 +4,104 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cli.lib.semantic_search import SemanticSearch, embed_query_text, embed_text, verify_embeddings, verify_model
+from cli.lib.semantic_search import (
+    chunk_text,
+    embed_chunks_command,
+    embed_query_text,
+    embed_text,
+    semantic_chunk_text,
+    semantic_search,
+    verify_embeddings,
+    verify_model,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Semantic Search CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    subparsers.add_parser("verify", help="Verify the embedding model is loaded correctly")
-    subparsers.add_parser("verify_embeddings", help="Build and verify embeddings for the movie dataset")
 
-    embed_parser = subparsers.add_parser("embed_text", help="Generate an embedding for input text")
-    embed_parser.add_argument("text", type=str, help="Text to embed")
+    subparsers.add_parser("verify", help="Verify that the embedding model is loaded")
 
-    embed_query_parser = subparsers.add_parser("embed_query", help="Generate an embedding for a search query")
+    single_embed_parser = subparsers.add_parser(
+        "embed_text", help="Generate an embedding for a single text"
+    )
+    single_embed_parser.add_argument("text", type=str, help="Text to embed")
+
+    subparsers.add_parser(
+        "verify_embeddings", help="Verify embeddings for the movie dataset"
+    )
+
+    embed_query_parser = subparsers.add_parser(
+        "embed_query", help="Generate an embedding for a search query"
+    )
     embed_query_parser.add_argument("query", type=str, help="Query to embed")
 
-    search_parser = subparsers.add_parser("search", help="Search movies by semantic similarity")
+    search_parser = subparsers.add_parser(
+        "search", help="Search for movies using semantic search"
+    )
     search_parser.add_argument("query", type=str, help="Search query")
-    search_parser.add_argument("--limit", type=int, default=5, help="Number of results to return")
+    search_parser.add_argument(
+        "--limit", type=int, default=5, help="Number of results to return"
+    )
 
-    chunk_parser = subparsers.add_parser("chunk", help="Split text into fixed-size chunks")
+    chunk_parser = subparsers.add_parser(
+        "chunk", help="Split text into fixed-size chunks with optional overlap"
+    )
     chunk_parser.add_argument("text", type=str, help="Text to chunk")
-    chunk_parser.add_argument("--chunk-size", type=int, default=200, help="Number of words per chunk")
-    chunk_parser.add_argument("--overlap", type=int, default=0, help="Number of overlapping words between chunks")
+    chunk_parser.add_argument(
+        "--chunk-size", type=int, default=200, help="Size of each chunk in words"
+    )
+    chunk_parser.add_argument(
+        "--overlap",
+        type=int,
+        default=0,
+        help="Number of words to overlap between chunks",
+    )
+
+    semantic_chunk_parser = subparsers.add_parser(
+        "semantic_chunk", help="Split text on sentence boundaries to preserve meaning"
+    )
+    semantic_chunk_parser.add_argument("text", type=str, help="Text to chunk")
+    semantic_chunk_parser.add_argument(
+        "--max-chunk-size",
+        type=int,
+        default=4,
+        help="Maximum size of each chunk in sentences",
+    )
+    semantic_chunk_parser.add_argument(
+        "--overlap",
+        type=int,
+        default=0,
+        help="Number of sentences to overlap between chunks",
+    )
+
+    subparsers.add_parser(
+        "embed_chunks", help="Generate embeddings for chunked documents"
+    )
 
     args = parser.parse_args()
 
     match args.command:
         case "verify":
             verify_model()
-        case "verify_embeddings":
-            verify_embeddings()
         case "embed_text":
             embed_text(args.text)
+        case "verify_embeddings":
+            verify_embeddings()
         case "embed_query":
             embed_query_text(args.query)
         case "search":
-            import json
-            from pathlib import Path
-            ss = SemanticSearch()
-            documents = json.loads(Path(__file__).resolve().parent.parent.joinpath("data", "movies.json").read_text())["movies"]
-            ss.load_or_create_embeddings(documents)
-            results = ss.search(args.query, args.limit)
-            for i, r in enumerate(results, 1):
-                print(f"{i}. {r['title']} (score: {r['score']:.4f})")
-                print(f"  {r['description']}")
+            semantic_search(args.query, args.limit)
         case "chunk":
-            words = args.text.split()
-            chunks = []
-            step = args.chunk_size - args.overlap
-            if step < 1:
-                step = 1
-            for i in range(0, len(words), step):
-                chunks.append(" ".join(words[i:i + args.chunk_size]))
-            print(f"Chunking {len(args.text)} characters")
-            for i, chunk in enumerate(chunks, 1):
-                print(f"{i}. {chunk}")
+            chunk_text(args.text, args.chunk_size, args.overlap)
+        case "semantic_chunk":
+            semantic_chunk_text(args.text, args.max_chunk_size, args.overlap)
+        case "embed_chunks":
+            embeddings = embed_chunks_command()
+            print(f"Generated {len(embeddings)} chunked embeddings")
         case _:
-            parser.print_help(sys.stderr)
+            parser.print_help()
+
 
 if __name__ == "__main__":
     main()
