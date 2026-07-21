@@ -192,6 +192,37 @@ class InvertedIndex:
         K = k1 * (1 - BM25_B + BM25_B * ratio)
         return (tf * (k1 + 1)) / (tf + K)
 
+    def bm25(self, doc_id: int, term: str) -> float:
+        """Calculate the full BM25 score for a term in a document.
+
+        BM25 = bm25_tf * bm25_idf
+        """
+        return self.get_bm25_tf(doc_id, term) * self.get_bm25_idf(term)
+
+    def bm25_search(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[tuple[int, float]]:
+        """Rank all documents by BM25 score for the given query.
+
+        Flow:
+        1. Tokenize the query into individual stemmed tokens.
+        2. For every document, sum the BM25 scores for all query tokens.
+        3. Sort documents by total score descending.
+        4. Return the top `limit` (doc_id, score) pairs.
+        """
+        query_tokens = tokenize_text(query)
+        if not query_tokens:
+            return []
+
+        scores: dict[int, float] = {}
+        for doc_id in self.docmap:
+            total = 0.0
+            for token in query_tokens:
+                total += self.bm25(doc_id, token)
+            if total > 0:
+                scores[doc_id] = total
+
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return ranked[:limit]
+
     def get_tf(self, doc_id: int, term: str) -> int:
         """
         Return how many times the token appears in the document with the given ID.
@@ -426,6 +457,20 @@ def bm25_tf_command(doc_id: int, term: str, k1: float = BM25_K1) -> float:
     return idx.get_bm25_tf(doc_id, token, k1)
 
 
+def bm25_search_command(query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[tuple[int, str, float]]:
+    """Run a full BM25 search across all documents and return ranked (doc_id, title, score) tuples."""
+    idx = InvertedIndex()
+    try:
+        idx.load()
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return []
+
+    results = idx.bm25_search(query, limit)
+    return [(doc_id, idx.docmap.get(doc_id, {}).get("title", "Unknown"), score)
+            for doc_id, score in results]
+
+
 def tfidf_command(doc_id: int, term: str) -> None:
     """
     Look up and print the TF-IDF score for a given term in a specific document.
@@ -507,6 +552,11 @@ def main() -> None:
     bm25_tf_parser.add_argument("term", type=str, help="Term to get BM25 TF score for")
     bm25_tf_parser.add_argument("k1", type=float, nargs='?', default=BM25_K1, help="Tunable BM25 K1 parameter")
 
+    # Register the bm25search subcommand to run full BM25 search
+    bm25search_parser = subparsers.add_parser("bm25search", help="Search movies using full BM25 scoring")
+    bm25search_parser.add_argument("query", type=str, help="Search query")
+    bm25search_parser.add_argument("--limit", type=int, default=DEFAULT_SEARCH_LIMIT, help="Number of results to return")
+
     args = parser.parse_args()
 
     match args.command:
@@ -534,6 +584,11 @@ def main() -> None:
             # Compute BM25 TF via the command function and print formatted to 2 decimal places
             bm25tf = bm25_tf_command(args.doc_id, args.term, args.k1)
             print(f"BM25 TF score of '{args.term}' in document '{args.doc_id}': {bm25tf:.2f}")
+        case "bm25search":
+            # Run full BM25 search and display ranked results with scores
+            results = bm25_search_command(args.query, args.limit)
+            for i, (doc_id, title, score) in enumerate(results, 1):
+                print(f"{i}. ({doc_id}) {title} - Score: {score:.2f}")
         case _:
             parser.print_help()
 
