@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cli.lib.semantic_search import embed_text, verify_embeddings, verify_model
+from cli.lib.semantic_search import embed_query_text, embed_text, verify_embeddings, verify_model
 
 
 def main() -> None:
@@ -16,6 +16,9 @@ def main() -> None:
     embed_parser = subparsers.add_parser("embed_text", help="Generate an embedding for input text")
     embed_parser.add_argument("text", type=str, help="Text to embed")
 
+    embed_query_parser = subparsers.add_parser("embed_query", help="Generate an embedding for a search query")
+    embed_query_parser.add_argument("query", type=str, help="Query to embed")
+
     args = parser.parse_args()
 
     match args.command:
@@ -25,6 +28,8 @@ def main() -> None:
             verify_embeddings()
         case "embed_text":
             embed_text(args.text)
+        case "embed_query":
+            embed_query_text(args.query)
         case _:
             parser.print_help(sys.stderr)
 

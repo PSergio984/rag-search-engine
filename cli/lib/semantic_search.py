@@ -49,6 +49,15 @@ def embed_text(text: str) -> list[float]:
     return embedding
 
 
+def embed_query_text(query: str) -> list[float]:
+    ss = SemanticSearch()
+    embedding = ss.generate_embedding(query)
+    print(f"Query: {query}")
+    print(f"First 3 dimensions: {embedding[:3]}")
+    print(f"Shape: {embedding.shape}")
+    return embedding
+
+
 def verify_embeddings() -> None:
     ss = SemanticSearch()
     documents = json.loads(Path(__file__).resolve().parent.parent.parent.joinpath("data", "movies.json").read_text())["movies"]
