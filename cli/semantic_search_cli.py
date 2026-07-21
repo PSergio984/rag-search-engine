@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cli.lib.semantic_search import embed_query_text, embed_text, verify_embeddings, verify_model
+from cli.lib.semantic_search import SemanticSearch, embed_query_text, embed_text, verify_embeddings, verify_model
 
 
 def main() -> None:
@@ -19,6 +19,10 @@ def main() -> None:
     embed_query_parser = subparsers.add_parser("embed_query", help="Generate an embedding for a search query")
     embed_query_parser.add_argument("query", type=str, help="Query to embed")
 
+    search_parser = subparsers.add_parser("search", help="Search movies by semantic similarity")
+    search_parser.add_argument("query", type=str, help="Search query")
+    search_parser.add_argument("--limit", type=int, default=5, help="Number of results to return")
+
     args = parser.parse_args()
 
     match args.command:
@@ -30,6 +34,16 @@ def main() -> None:
             embed_text(args.text)
         case "embed_query":
             embed_query_text(args.query)
+        case "search":
+            import json
+            from pathlib import Path
+            ss = SemanticSearch()
+            documents = json.loads(Path(__file__).resolve().parent.parent.joinpath("data", "movies.json").read_text())["movies"]
+            ss.load_or_create_embeddings(documents)
+            results = ss.search(args.query, args.limit)
+            for i, r in enumerate(results, 1):
+                print(f"{i}. {r['title']} (score: {r['score']:.4f})")
+                print(f"  {r['description']}")
         case _:
             parser.print_help(sys.stderr)
 
