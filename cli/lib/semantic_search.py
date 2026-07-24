@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from .search_utils import SCORE_PRECISION, format_search_result
+
 
 def cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
     dot_product = np.dot(vec1, vec2)
@@ -184,7 +186,17 @@ def semantic_chunk(
     max_chunk_size: int = DEFAULT_SEMANTIC_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[str]:
+    # Strip leading/trailing whitespace and bail early if nothing remains
+    text = text.strip()
+    if not text:
+        return []
+    # Split on sentence boundaries (. ! ? followed by whitespace)
     sentences = re.split(r"(?<=[.!?])\s+", text)
+    # If a single sentence lacks terminal punctuation, keep the whole text intact
+    if len(sentences) == 1 and not re.search(r"[.!?]$", sentences[0]):
+        sentences = [text]
+    # Normalise each sentence (strip whitespace, drop empty fragments)
+    sentences = [s.strip() for s in sentences if s.strip()]
     chunks = []
     i = 0
     n_sentences = len(sentences)
@@ -269,6 +281,34 @@ class ChunkedSemanticSearch(SemanticSearch):
             return self.chunk_embeddings
 
         return self.build_chunk_embeddings(documents)
+
+    def search_chunks(self, query: str, limit: int = 10) -> list[dict]:
+        query_embedding = self.generate_embedding(query)
+
+        chunk_scores: list[dict] = []
+        for i, chunk_emb in enumerate(self.chunk_embeddings):
+            score = cosine_similarity(query_embedding, chunk_emb)
+            chunk_scores.append({
+                "chunk_idx": self.chunk_metadata[i]["chunk_idx"],
+                "movie_idx": self.chunk_metadata[i]["movie_idx"],
+                "score": score,
+            })
+
+        movie_best: dict[int, dict] = {}
+        for cs in chunk_scores:
+            midx = cs["movie_idx"]
+            if midx not in movie_best or cs["score"] > movie_best[midx]["score"]:
+                movie_best[midx] = cs
+
+        movie_scores = sorted(movie_best.values(), key=lambda x: x["score"], reverse=True)[:limit]
+
+        results: list[dict] = []
+        for ms in movie_scores:
+            doc = self.documents[ms["movie_idx"]]
+            result = format_search_result(doc, ms["score"])
+            results.append(result)
+
+        return results
 
 
 def embed_chunks_command() -> np.ndarray:

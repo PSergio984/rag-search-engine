@@ -122,6 +122,9 @@ class InvertedIndex:
         self.docmap: dict[int, dict] = {}
         # New dictionary mapping document IDs to Counter objects, representing term frequencies (TF) of tokens
         self.term_frequencies: dict[int, Counter] = {}
+        # Path to the serialised index file on disk (used by HybridSearch to
+        # decide whether a build is needed)
+        self.index_path = CACHE_DIR / "index.pkl"
 
     def __add_document(self, doc_id: int, text: str) -> None:
         """Tokenize text and map each unique token to this document ID."""
