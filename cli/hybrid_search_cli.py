@@ -6,6 +6,7 @@
 import argparse
 import os
 import sys
+import time          # Throttle LLM API calls to avoid rate limits
 from pathlib import Path
 
 # Ensure the project root is on sys.path so that cli.lib imports resolve correctly.
@@ -123,6 +124,73 @@ def spell_correct_query(query: str) -> str:
     return enhanced
 
 
+def individual_rerank(query: str, results: list[dict], limit: int) -> list[dict]:
+    """Score each RRF result individually via LLM and re-sort by the new score.
+
+    *results* should contain more than *limit* entries (typically 5× the
+    user-facing limit) so the re-ranker has a deeper pool to choose from.
+    """
+    print(f"Re-ranking top {limit} results using individual method...")
+
+    # ── LLM client setup ──────────────────────────────────────────────────
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    # ── Score every candidate document ────────────────────────────────────
+    for i, r in enumerate(results):
+        # Ask the LLM to rate relevance on a 0–10 scale
+        prompt = (
+            f"Rate how well this movie matches the search query.\n\n"
+            f'Query: "{query}"\n'
+            f"Movie: {r.get('title', '')} - {r.get('description', '')}\n\n"
+            f"Consider:\n"
+            f"- Direct relevance to query\n"
+            f"- User intent (what they're looking for)\n"
+            f"- Content appropriateness\n\n"
+            f"Rate 0-10 (10 = perfect match).\n"
+            f"Output ONLY the number in your response, no other text or explanation.\n\n"
+            f"Score:"
+        )
+
+        # Retry up to 3 times — free-tier OpenRouter routes to different
+        # models on each request, so a retry often succeeds after a failure.
+        llm_score = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model="openrouter/free",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = response.choices[0].message.content.strip()
+                score = float(content)
+                if 0.0 <= score <= 10.0:
+                    llm_score = score
+                    break
+            except Exception:
+                # Brief pause before retrying a failed request
+                if attempt < 2:
+                    time.sleep(1)
+                continue
+
+        # Default to 0.0 if all retries were exhausted
+        r["llm_score"] = llm_score if llm_score is not None else 0.0
+
+        # Throttle between documents so we don't hit OpenRouter rate limits
+        if i < len(results) - 1:
+            time.sleep(3)
+
+    # ── Sort by LLM score and keep only the top *limit* ───────────────────
+    results.sort(key=lambda x: x["llm_score"], reverse=True)
+    return results[:limit]
+
+
 def normalize_command(scores: list[float]) -> None:
     """Min-max normalize a list of scores and print each on its own line."""
     if not scores:
@@ -138,11 +206,14 @@ def normalize_command(scores: list[float]) -> None:
         print(f"* {normalized:.4f}")
 
 
-def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = None) -> None:
+def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = None, rerank_method: str | None = None) -> None:
     """Run RRF hybrid search and print results.
 
     If *enhance* is provided, the query is first sent through the LLM for
     spelling correction before being passed to the search engine.
+
+    If *rerank_method* is ``"individual"``, each RRF result is individually
+    scored by an LLM and results are re-sorted by that new score.
     """
     # Optionally enhance the query before searching
     if enhance == "spell":
@@ -154,15 +225,28 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
 
     movies = load_movies()
     hs = HybridSearch(movies)
-    results = hs.rrf_search(query, k, limit)
-    # Print each result with rank positions and RRF score
+
+    if rerank_method == "individual":
+        # Gather 5× the desired limit so the re-ranker has a deeper pool
+        gather_limit = limit * 5
+        results = hs.rrf_search(query, k, gather_limit)
+        results = individual_rerank(query, results, limit)
+        print()
+    else:
+        # Standard RRF without re-ranking
+        results = hs.rrf_search(query, k, limit)
+
+    # Print the header and each result with rank positions and scores
+    print(f"Reciprocal Rank Fusion Results for '{query}' (k={k}):\n")
     for i, r in enumerate(results, 1):
         bm25_rank_str = str(r["bm25_rank"]) if r["bm25_rank"] is not None else "-"
         sem_rank_str = str(r["semantic_rank"]) if r["semantic_rank"] is not None else "-"
         print(f"{i}. {r['title']}")
-        print(f"  RRF Score: {r['rrf_score']:.3f}")
-        print(f"  BM25 Rank: {bm25_rank_str}, Semantic Rank: {sem_rank_str}")
-        print(f"  {r['description']}")
+        if "llm_score" in r:
+            print(f"   Re-rank Score: {r['llm_score']:.3f}/10")
+        print(f"   RRF Score: {r['rrf_score']:.3f}")
+        print(f"   BM25 Rank: {bm25_rank_str}, Semantic Rank: {sem_rank_str}")
+        print(f"   {r['description']}")
 
 
 def weighted_search_command(query: str, alpha: float, limit: int) -> None:
@@ -216,6 +300,15 @@ def main() -> None:
         choices=["spell", "rewrite", "expand"],
         help="Query enhancement method",
     )
+    # Optional LLM-based re-ranking to refine RRF results.  Currently only
+    # supports "individual" (one LLM call per document), with more strategies
+    # planned.
+    rrf_parser.add_argument(
+        "--rerank-method",
+        type=str,
+        choices=["individual"],
+        help="LLM re-ranking method to apply after initial RRF",
+    )
 
     args = parser.parse_args()
 
@@ -226,7 +319,7 @@ def main() -> None:
         case "weighted-search":
             weighted_search_command(args.query, args.alpha, args.limit)
         case "rrf-search":
-            rrf_search_command(args.query, args.k, args.limit, args.enhance)
+            rrf_search_command(args.query, args.k, args.limit, args.enhance, args.rerank_method)
         case _:
             parser.print_help()
 
