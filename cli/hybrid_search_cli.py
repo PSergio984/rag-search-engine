@@ -19,6 +19,7 @@ from openai import OpenAI
 
 def rewrite_query(query: str) -> str:
     """Send the query to the LLM and return a rewritten version optimized for search."""
+    # Load the API key from .env and create an OpenRouter client
     load_dotenv()
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -29,6 +30,7 @@ def rewrite_query(query: str) -> str:
         api_key=api_key,
     )
 
+    # Prompt the LLM to expand informal/slang terms into clear search keywords
     prompt = (
         f"Rewrite the user-provided movie search query below into a more effective "
         f"search query. Expand informal phrasing, slang, or vague references into "
@@ -37,12 +39,14 @@ def rewrite_query(query: str) -> str:
         f'User query: "{query}"\n'
     )
 
+    # Send the request and extract the rewritten query
     response = client.chat.completions.create(
         model="openrouter/free",
         messages=[{"role": "user", "content": prompt}],
     )
 
     enhanced = response.choices[0].message.content.strip()
+    # Show the user the original vs. rewritten query
     print(f"Enhanced query (rewrite): '{query}' -> '{enhanced}'\n")
     return enhanced
 
