@@ -17,6 +17,36 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 
+def rewrite_query(query: str) -> str:
+    """Send the query to the LLM and return a rewritten version optimized for search."""
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    prompt = (
+        f"Rewrite the user-provided movie search query below into a more effective "
+        f"search query. Expand informal phrasing, slang, or vague references into "
+        f"clear, searchable terms. Preserve the core intent. Do not add extra words "
+        f"beyond what is needed. Output only the final query text, nothing else.\n"
+        f'User query: "{query}"\n'
+    )
+
+    response = client.chat.completions.create(
+        model="openrouter/free",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    enhanced = response.choices[0].message.content.strip()
+    print(f"Enhanced query (rewrite): '{query}' -> '{enhanced}'\n")
+    return enhanced
+
+
 def spell_correct_query(query: str) -> str:
     """Send the query to the LLM and return a spelling-corrected version."""
     # Load environment variables (API key) from .env file
@@ -77,6 +107,8 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
     # Optionally enhance the query before searching
     if enhance == "spell":
         query = spell_correct_query(query)
+    elif enhance == "rewrite":
+        query = rewrite_query(query)
 
     movies = load_movies()
     hs = HybridSearch(movies)
@@ -139,7 +171,7 @@ def main() -> None:
     rrf_parser.add_argument(
         "--enhance",
         type=str,
-        choices=["spell"],
+        choices=["spell", "rewrite"],
         help="Query enhancement method",
     )
 
