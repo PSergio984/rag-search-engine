@@ -33,7 +33,8 @@ def expand_query(query: str) -> str:
         f"Expand the user-provided movie search query below with related terms.\n\n"
         f"Add synonyms and related concepts that might appear in movie descriptions.\n"
         f"Keep expansions relevant and focused.\n"
-        f"Output only the additional terms; they will be appended to the original query.\n\n"
+        f"Output only the additional terms; they will be appended to the original query.\n"
+        f"Do not include any disclaimers, safety notes, or extra text.\n\n"
         f"Examples:\n"
         f'- "scary bear movie" -> "scary horror grizzly bear movie terrifying film"\n'
         f'- "action movie with bear" -> "action thriller bear chase fight adventure"\n'
