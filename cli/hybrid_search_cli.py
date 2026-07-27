@@ -17,6 +17,41 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 
+def expand_query(query: str) -> str:
+    """Send the query to the LLM and return it expanded with related terms."""
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    prompt = (
+        f"Expand the user-provided movie search query below with related terms.\n\n"
+        f"Add synonyms and related concepts that might appear in movie descriptions.\n"
+        f"Keep expansions relevant and focused.\n"
+        f"Output only the additional terms; they will be appended to the original query.\n\n"
+        f"Examples:\n"
+        f'- "scary bear movie" -> "scary horror grizzly bear movie terrifying film"\n'
+        f'- "action movie with bear" -> "action thriller bear chase fight adventure"\n'
+        f'- "comedy with bear" -> "comedy funny bear humor lighthearted"\n\n'
+        f'User query: "{query}"\n'
+    )
+
+    response = client.chat.completions.create(
+        model="openrouter/free",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    expanded_terms = response.choices[0].message.content.strip()
+    enhanced = f"{query} {expanded_terms}"
+    print(f"Enhanced query (expand): '{query}' -> '{enhanced}'\n")
+    return enhanced
+
+
 def rewrite_query(query: str) -> str:
     """Send the query to the LLM and return a rewritten version optimized for search."""
     # Load the API key from .env and create an OpenRouter client
@@ -113,6 +148,8 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
         query = spell_correct_query(query)
     elif enhance == "rewrite":
         query = rewrite_query(query)
+    elif enhance == "expand":
+        query = expand_query(query)
 
     movies = load_movies()
     hs = HybridSearch(movies)
@@ -175,7 +212,7 @@ def main() -> None:
     rrf_parser.add_argument(
         "--enhance",
         type=str,
-        choices=["spell", "rewrite"],
+        choices=["spell", "rewrite", "expand"],
         help="Query enhancement method",
     )
 
