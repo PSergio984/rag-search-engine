@@ -4,6 +4,7 @@
 # ---------------------------------------------------------------------------
 
 import argparse
+import json
 import os
 import sys
 import time          # Throttle LLM API calls to avoid rate limits
@@ -191,6 +192,83 @@ def individual_rerank(query: str, results: list[dict], limit: int) -> list[dict]
     return results[:limit]
 
 
+def batch_rerank(query: str, results: list[dict], limit: int) -> list[dict]:
+    """Rank all candidate documents in a single LLM call and re-sort by rank.
+
+    The LLM receives every candidate formatted with its ID, title and
+    description, and returns a JSON array of IDs ordered by relevance.
+    Results are then re-ordered to match and truncated to *limit*.
+    """
+    print(f"Re-ranking top {limit} results using batch method...")
+
+    # ── LLM client setup ──────────────────────────────────────────────────
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    # ── Build the candidate listing for the prompt ────────────────────────
+    doc_list_str = "\n".join(
+        f"[ID {r['id']}] {r.get('title', '')} - {r.get('description', '')}"
+        for r in results
+    )
+
+    prompt = (
+        f"Rank the movies listed below by relevance to the following search query.\n\n"
+        f'Query: "{query}"\n\n'
+        f"Movies:\n"
+        f"{doc_list_str}\n\n"
+        f"Return the movie IDs in order of relevance, best match first.\n\n"
+        f"Your response must be a raw JSON array of integers.\n"
+        f"Do not wrap the JSON in Markdown. Do not use a ```json code block.\n"
+        f"Do not include any explanatory text.\n\n"
+        f"For example:\n"
+        f"[75, 12, 34, 2, 1]\n\n"
+        f"Ranking:"
+    )
+
+    # ── Send the prompt with retries ──────────────────────────────────────
+    # Free-tier OpenRouter routes to different models on each request, so a
+    # retry often succeeds after a parse failure.
+    ranked_ids: list[int] | None = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = response.choices[0].message.content.strip()
+            ranked_ids = json.loads(content)
+            if isinstance(ranked_ids, list) and all(isinstance(i, int) for i in ranked_ids):
+                break
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+            continue
+
+    # ── Re-order results to match the LLM ranking ─────────────────────────
+    if ranked_ids:
+        doc_map = {r["id"]: r for r in results}
+        ordered: list[dict] = []
+        for rank, doc_id in enumerate(ranked_ids, 1):
+            doc = doc_map.get(doc_id)
+            if doc is None:
+                continue
+            doc["llm_rank"] = rank
+            ordered.append(doc)
+        return ordered[:limit]
+
+    # Fallback: return first *limit* results with default ranks
+    for rank, r in enumerate(results[:limit], 1):
+        r["llm_rank"] = rank
+    return results[:limit]
+
+
 def normalize_command(scores: list[float]) -> None:
     """Min-max normalize a list of scores and print each on its own line."""
     if not scores:
@@ -214,6 +292,9 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
 
     If *rerank_method* is ``"individual"``, each RRF result is individually
     scored by an LLM and results are re-sorted by that new score.
+
+    If *rerank_method* is ``"batch"``, all candidates are sent in a single
+    LLM call that returns a relevance-ordered list of IDs.
     """
     # Optionally enhance the query before searching
     if enhance == "spell":
@@ -226,11 +307,14 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
     movies = load_movies()
     hs = HybridSearch(movies)
 
-    if rerank_method == "individual":
+    if rerank_method in ("individual", "batch"):
         # Gather 5× the desired limit so the re-ranker has a deeper pool
         gather_limit = limit * 5
         results = hs.rrf_search(query, k, gather_limit)
-        results = individual_rerank(query, results, limit)
+        if rerank_method == "individual":
+            results = individual_rerank(query, results, limit)
+        elif rerank_method == "batch":
+            results = batch_rerank(query, results, limit)
         print()
     else:
         # Standard RRF without re-ranking
@@ -244,6 +328,8 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
         print(f"{i}. {r['title']}")
         if "llm_score" in r:
             print(f"   Re-rank Score: {r['llm_score']:.3f}/10")
+        if "llm_rank" in r:
+            print(f"   Re-rank Rank: {r['llm_rank']}")
         print(f"   RRF Score: {r['rrf_score']:.3f}")
         print(f"   BM25 Rank: {bm25_rank_str}, Semantic Rank: {sem_rank_str}")
         print(f"   {r['description']}")
@@ -300,13 +386,13 @@ def main() -> None:
         choices=["spell", "rewrite", "expand"],
         help="Query enhancement method",
     )
-    # Optional LLM-based re-ranking to refine RRF results.  Currently only
-    # supports "individual" (one LLM call per document), with more strategies
-    # planned.
+    # Optional LLM-based re-ranking to refine RRF results.
+    # "individual" scores each candidate with a separate LLM call.
+    # "batch"   ranks all candidates in a single LLM call.
     rrf_parser.add_argument(
         "--rerank-method",
         type=str,
-        choices=["individual"],
+        choices=["individual", "batch"],
         help="LLM re-ranking method to apply after initial RRF",
     )
 

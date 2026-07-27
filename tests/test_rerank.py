@@ -14,7 +14,7 @@ import pytest
 root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 
-from cli.hybrid_search_cli import individual_rerank
+from cli.hybrid_search_cli import batch_rerank, individual_rerank
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +182,96 @@ class TestIndividualRerank:
         """An empty candidate pool should produce an empty result list."""
         out = individual_rerank("q", [], 5)
         assert out == []
+
+
+# ---------------------------------------------------------------------------
+# Tests — batch_rerank
+# ---------------------------------------------------------------------------
+
+
+class TestBatchRerank:
+    """Exercises ``batch_rerank()`` — the single-call LLM ranker.
+
+    The mock response returns a JSON array of document IDs in the desired
+    order so we can verify re-ordering, truncation, and edge cases.
+    """
+
+    def test_returns_limited_results(self, mock_client):
+        """Only ``limit`` items should be returned even if the pool is larger."""
+        results = [_doc(i) for i in range(1, 11)]
+        mock_client.chat.completions.create.return_value = _mock_response("[3, 1, 2]")
+
+        out = batch_rerank("q", results, 2)
+
+        assert len(out) == 2
+
+    def test_orders_by_llm_rank(self, mock_client):
+        """Results should follow the rank order returned by the LLM."""
+        results = [_doc(10), _doc(20), _doc(30)]
+        mock_client.chat.completions.create.return_value = _mock_response("[30, 10, 20]")
+
+        out = batch_rerank("q", results, 3)
+
+        assert [r["id"] for r in out] == [30, 10, 20]
+        assert [r["llm_rank"] for r in out] == [1, 2, 3]
+
+    def test_llm_rank_added_to_each_result(self, mock_client):
+        """Every returned result should carry its ``llm_rank`` key."""
+        results = [_doc(1), _doc(2)]
+        mock_client.chat.completions.create.return_value = _mock_response("[2, 1]")
+
+        out = batch_rerank("q", results, 2)
+
+        for r in out:
+            assert "llm_rank" in r
+
+    def test_preserves_original_document_fields(self, mock_client):
+        """Original metadata (title, description, RRF score, ranks) must survive."""
+        results = [_doc(42, "Test Title", "Test description")]
+        mock_client.chat.completions.create.return_value = _mock_response("[42]")
+
+        out = batch_rerank("q", results, 5)
+
+        assert out[0]["title"] == "Test Title"
+        assert out[0]["description"] == "Test description"
+        assert out[0]["rrf_score"] == 1.0
+        assert out[0]["bm25_rank"] == 42
+
+    def test_skips_unknown_ids(self, mock_client):
+        """IDs returned by the LLM that aren't in the pool should be skipped."""
+        results = [_doc(1), _doc(2)]
+        mock_client.chat.completions.create.return_value = _mock_response("[99, 1, 2]")
+
+        out = batch_rerank("q", results, 5)
+
+        # Unknown ID 99 is skipped
+        assert [r["id"] for r in out] == [1, 2]
+
+    def test_handles_empty_results(self, mock_client):
+        """An empty candidate pool should produce an empty result list."""
+        out = batch_rerank("q", [], 5)
+        assert out == []
+
+    def test_fallback_on_parse_failure(self, mock_client):
+        """If the LLM response can't be parsed, fall back to original order."""
+        mock_client.chat.completions.create.return_value = _mock_response("not json")
+
+        results = [_doc(10), _doc(20), _doc(30)]
+        out = batch_rerank("q", results, 3)
+
+        # Original order preserved with sequential ranks
+        assert [r["id"] for r in out] == [10, 20, 30]
+        assert [r["llm_rank"] for r in out] == [1, 2, 3]
+
+    def test_retry_on_malformed_json(self, mock_client):
+        """Transient JSON failures should be retried."""
+        mock_client.chat.completions.create.side_effect = [
+            _mock_response("not json"),
+            _mock_response("{bad"),
+            _mock_response("[2, 1]"),
+        ]
+
+        out = batch_rerank("q", [_doc(1), _doc(2)], 2)
+
+        assert [r["id"] for r in out] == [2, 1]
+        assert mock_client.chat.completions.create.call_count == 3
