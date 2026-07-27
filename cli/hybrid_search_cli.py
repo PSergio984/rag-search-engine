@@ -17,6 +17,7 @@ from cli.lib.hybrid_search import HybridSearch
 from cli.lib.search_utils import load_movies
 from dotenv import load_dotenv
 from openai import OpenAI
+from sentence_transformers import CrossEncoder
 
 
 def expand_query(query: str) -> str:
@@ -269,6 +270,37 @@ def batch_rerank(query: str, results: list[dict], limit: int) -> list[dict]:
     return results[:limit]
 
 
+def cross_encoder_rerank(query: str, results: list[dict], limit: int) -> list[dict]:
+    """Re-rank results using a cross-encoder model for pairwise relevance.
+
+    Each candidate is paired with the query and scored by a dedicated
+    cross-encoder model in a single batch prediction call.
+    """
+    print(f"Re-ranking top {limit} results using cross_encoder method...")
+
+    # ── Build query-document pairs ────────────────────────────────────────
+    pairs = []
+    for doc in results:
+        pairs.append([query, f"{doc.get('title', '')} - {doc.get('description', '')}"])
+
+    # ── Load the cross-encoder model ──────────────────────────────────────
+    # Try GPU first; fall back to CPU if hardware acceleration is unavailable.
+    try:
+        cross_encoder = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L2-v2")
+    except Exception:
+        cross_encoder = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L2-v2", device="cpu")
+
+    # ── Score all pairs in one batch ──────────────────────────────────────
+    scores = cross_encoder.predict(pairs)
+
+    # ── Attach scores and sort ────────────────────────────────────────────
+    for doc, score in zip(results, scores):
+        doc["cross_encoder_score"] = float(score)
+
+    results.sort(key=lambda x: x["cross_encoder_score"], reverse=True)
+    return results[:limit]
+
+
 def normalize_command(scores: list[float]) -> None:
     """Min-max normalize a list of scores and print each on its own line."""
     if not scores:
@@ -295,6 +327,9 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
 
     If *rerank_method* is ``"batch"``, all candidates are sent in a single
     LLM call that returns a relevance-ordered list of IDs.
+
+    If *rerank_method* is ``"cross_encoder"``, a cross-encoder model scores
+    every (query, document) pair and results are re-sorted by that score.
     """
     # Optionally enhance the query before searching
     if enhance == "spell":
@@ -307,7 +342,7 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
     movies = load_movies()
     hs = HybridSearch(movies)
 
-    if rerank_method in ("individual", "batch"):
+    if rerank_method in ("individual", "batch", "cross_encoder"):
         # Gather 5× the desired limit so the re-ranker has a deeper pool
         gather_limit = limit * 5
         results = hs.rrf_search(query, k, gather_limit)
@@ -315,6 +350,8 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
             results = individual_rerank(query, results, limit)
         elif rerank_method == "batch":
             results = batch_rerank(query, results, limit)
+        elif rerank_method == "cross_encoder":
+            results = cross_encoder_rerank(query, results, limit)
         print()
     else:
         # Standard RRF without re-ranking
@@ -330,6 +367,8 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
             print(f"   Re-rank Score: {r['llm_score']:.3f}/10")
         if "llm_rank" in r:
             print(f"   Re-rank Rank: {r['llm_rank']}")
+        if "cross_encoder_score" in r:
+            print(f"   Cross Encoder Score: {r['cross_encoder_score']:.3f}")
         print(f"   RRF Score: {r['rrf_score']:.3f}")
         print(f"   BM25 Rank: {bm25_rank_str}, Semantic Rank: {sem_rank_str}")
         print(f"   {r['description']}")
@@ -386,14 +425,15 @@ def main() -> None:
         choices=["spell", "rewrite", "expand"],
         help="Query enhancement method",
     )
-    # Optional LLM-based re-ranking to refine RRF results.
-    # "individual" scores each candidate with a separate LLM call.
-    # "batch"   ranks all candidates in a single LLM call.
+    # Optional re-ranking to refine RRF results.
+    # "individual"     scores each candidate with a separate LLM call.
+    # "batch"          ranks all candidates in a single LLM call.
+    # "cross_encoder"  uses a local cross-encoder model for pairwise scoring.
     rrf_parser.add_argument(
         "--rerank-method",
         type=str,
-        choices=["individual", "batch"],
-        help="LLM re-ranking method to apply after initial RRF",
+        choices=["individual", "batch", "cross_encoder"],
+        help="Re-ranking method to apply after initial RRF",
     )
 
     args = parser.parse_args()
