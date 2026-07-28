@@ -1,15 +1,17 @@
 # Evaluation CLI for RRF hybrid search using a golden dataset.
 #
 # Flow:
-#   1. Parse --limit (k for precision@k / recall@k).
+#   1. Parse --limit (k for precision@k / recall@k / F1).
 #   2. Load golden_dataset.json — a set of queries with their known relevant docs.
 #   3. Load the full movie catalog and initialise the HybridSearch engine
 #      (BM25 + semantic search fused via Reciprocal Rank Fusion).
 #   4. For each test case:
 #      a. Run RRF search (k=60) to retrieve the top-k results.
 #      b. Compare retrieved titles against the golden relevant set.
-#      c. Compute precision@k and recall@k.
-#      d. Print query, metrics, retrieved list, and relevant list.
+#      c. Compute precision@k = (# relevant retrieved) / k.
+#      d. Compute recall@k = (# relevant retrieved) / (# total relevant for query).
+#      e. Compute F1 = harmonic mean of precision and recall.
+#      f. Print query, all three metrics, retrieved list, and relevant list.
 
 import argparse
 import json
