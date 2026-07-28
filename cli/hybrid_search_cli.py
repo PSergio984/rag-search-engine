@@ -1,6 +1,20 @@
 # ---------------------------------------------------------------------------
 # Hybrid Search CLI — combines keyword (BM25) and semantic (embedding) search
 # to produce more robust relevance rankings.
+#
+# Pipeline flow:
+#   1. Parse the subcommand (rrf-search, weighted-search, normalize) and flags.
+#   2. Optionally enhance the query via LLM (spell-correct, rewrite, or expand).
+#   3. Load the movie catalog and initialise the HybridSearch engine.
+#   4. Run RRF search to fuse BM25 + semantic results into a ranked list.
+#   5. Optionally re-rank the RRF results using one of three methods:
+#      - individual: LLM scores each candidate separately.
+#      - batch: LLM ranks all candidates in a single call.
+#      - cross_encoder: local cross-encoder model scores (query, doc) pairs.
+#   6. Print the final ranked results with scores and metadata.
+#
+# Debug logging ([DEBUG]) is emitted at each stage:
+#   - Original query, enhanced query, RRF intermediate results, final reranked results.
 # ---------------------------------------------------------------------------
 
 import argparse
@@ -331,6 +345,9 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
     If *rerank_method* is ``"cross_encoder"``, a cross-encoder model scores
     every (query, document) pair and results are re-sorted by that score.
     """
+    # [DEBUG] Log the original query
+    print(f"[DEBUG] Original query: '{query}'")
+
     # Optionally enhance the query before searching
     if enhance == "spell":
         query = spell_correct_query(query)
@@ -339,6 +356,9 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
     elif enhance == "expand":
         query = expand_query(query)
 
+    # [DEBUG] Log the query after enhancements
+    print(f"[DEBUG] Query after enhancements: '{query}'")
+
     movies = load_movies()
     hs = HybridSearch(movies)
 
@@ -346,16 +366,34 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
         # Gather 5× the desired limit so the re-ranker has a deeper pool
         gather_limit = limit * 5
         results = hs.rrf_search(query, k, gather_limit)
+
+        # [DEBUG] Log the results after RRF search
+        print(f"[DEBUG] Results after RRF search (top {len(results)}):")
+        for i, r in enumerate(results, 1):
+            print(f"[DEBUG]   {i}. {r['title']} (RRF Score: {r['rrf_score']:.3f})")
+
         if rerank_method == "individual":
             results = individual_rerank(query, results, limit)
         elif rerank_method == "batch":
             results = batch_rerank(query, results, limit)
         elif rerank_method == "cross_encoder":
             results = cross_encoder_rerank(query, results, limit)
+
+        # [DEBUG] Log the final results after re-ranking
+        print(f"[DEBUG] Final results after {rerank_method} re-ranking (top {len(results)}):")
+        for i, r in enumerate(results, 1):
+            score_key = {"individual": "llm_score", "batch": "llm_rank", "cross_encoder": "cross_encoder_score"}[rerank_method]
+            print(f"[DEBUG]   {i}. {r['title']} ({score_key}: {r.get(score_key, 'N/A')})")
         print()
     else:
         # Standard RRF without re-ranking
         results = hs.rrf_search(query, k, limit)
+
+        # [DEBUG] Log the results after RRF search
+        print(f"[DEBUG] Results after RRF search (top {len(results)}):")
+        for i, r in enumerate(results, 1):
+            print(f"[DEBUG]   {i}. {r['title']} (RRF Score: {r['rrf_score']:.3f})")
+        print()
 
     # Print the header and each result with rank positions and scores
     print(f"Reciprocal Rank Fusion Results for '{query}' (k={k}):\n")
