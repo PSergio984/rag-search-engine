@@ -330,7 +330,60 @@ def normalize_command(scores: list[float]) -> None:
         print(f"* {normalized:.4f}")
 
 
-def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = None, rerank_method: str | None = None) -> None:
+def evaluate_results(query: str, results: list[dict]) -> list[int]:
+    """Send results to the LLM and get a relevance rating (0-3) for each."""
+    load_dotenv()
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable not set")
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
+
+    formatted_results = [
+        f"{i}. {r['title']} - {r.get('description', '')[:200]}"
+        for i, r in enumerate(results, 1)
+    ]
+
+    prompt = (
+        f"Rate how relevant each result is to this query on a 0-3 scale:\n\n"
+        f'Query: "{query}"\n\n'
+        f"Results:\n"
+        f"{chr(10).join(formatted_results)}\n\n"
+        f"Scale:\n"
+        f"- 3: Highly relevant\n"
+        f"- 2: Relevant\n"
+        f"- 1: Marginally relevant\n"
+        f"- 0: Not relevant\n\n"
+        f"Do NOT give any numbers other than 0, 1, 2, or 3.\n\n"
+        f"Return ONLY the scores in the same order you were given the documents. "
+        f"Return a valid JSON list, nothing else. For example:\n\n"
+        f"[2, 0, 3, 2, 0, 1]"
+    )
+
+    scores = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = response.choices[0].message.content.strip()
+            parsed = json.loads(content)
+            if isinstance(parsed, list) and all(isinstance(s, int) and 0 <= s <= 3 for s in parsed):
+                scores = parsed
+                break
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+            continue
+
+    return scores if scores is not None else [0] * len(results)
+
+
+def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = None, rerank_method: str | None = None, evaluate: bool = False) -> None:
     """Run RRF hybrid search and print results.
 
     If *enhance* is provided, the query is first sent through the LLM for
@@ -411,6 +464,12 @@ def rrf_search_command(query: str, k: int, limit: int, enhance: str | None = Non
         print(f"   BM25 Rank: {bm25_rank_str}, Semantic Rank: {sem_rank_str}")
         print(f"   {r['description']}")
 
+    if evaluate:
+        print("\n--- LLM Evaluation ---")
+        eval_scores = evaluate_results(query, results)
+        for i, (r, score) in enumerate(zip(results, eval_scores), 1):
+            print(f"{i}. {r['title']}: {score}/3")
+
 
 def weighted_search_command(query: str, alpha: float, limit: int) -> None:
     """Run weighted hybrid search and print results.
@@ -473,6 +532,11 @@ def main() -> None:
         choices=["individual", "batch", "cross_encoder"],
         help="Re-ranking method to apply after initial RRF",
     )
+    rrf_parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Rate results on a 0-3 relevance scale using an LLM",
+    )
 
     args = parser.parse_args()
 
@@ -483,7 +547,7 @@ def main() -> None:
         case "weighted-search":
             weighted_search_command(args.query, args.alpha, args.limit)
         case "rrf-search":
-            rrf_search_command(args.query, args.k, args.limit, args.enhance, args.rerank_method)
+            rrf_search_command(args.query, args.k, args.limit, args.enhance, args.rerank_method, args.evaluate)
         case _:
             parser.print_help()
 
