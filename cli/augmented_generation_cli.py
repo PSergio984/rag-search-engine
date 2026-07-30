@@ -3,9 +3,10 @@
 # Commands:
 #   rag        — RRF search + LLM-generated answer to the query.
 #   summarize  — RRF search + LLM-generated multi-document summary.
+#   citations  — RRF search + LLM-generated answer with [N] source citations.
 #
-# Flow (both commands):
-#   1. Parse the subcommand (rag / summarize) with a user query and flags.
+# Flow (all commands):
+#   1. Parse the subcommand with a user query and flags.
 #   2. Load the movie catalog and initialise the HybridSearch engine
 #      (BM25 + semantic search fused via Reciprocal Rank Fusion).
 #   3. Run RRF search (k=60) to retrieve the top-k relevant documents.
@@ -52,6 +53,15 @@ def main() -> None:
     sum_parser.add_argument("query", type=str, help="Search query to summarize")
     sum_parser.add_argument(
         "--limit", type=int, default=5, help="Number of results to summarize"
+    )
+
+    # Citations subcommand: answers the query with [N] source citations.
+    cit_parser = subparsers.add_parser(
+        "citations", help="Answer with cited sources"
+    )
+    cit_parser.add_argument("query", type=str, help="Search query")
+    cit_parser.add_argument(
+        "--limit", type=int, default=5, help="Number of results to return"
     )
 
     args = parser.parse_args()
@@ -138,6 +148,59 @@ Provide a comprehensive 3-4 sentence answer that combines information from multi
 
             summary = response.choices[0].message.content.strip()
             print(f"LLM Summary:\n{summary}")
+
+        case "citations":
+            query = args.query
+            limit = args.limit
+
+            # Load the movie dataset and initialise the hybrid search engine.
+            movies = load_movies()
+            hs = HybridSearch(movies)
+
+            # Perform RRF search and format documents for the prompt.
+            results = hs.rrf_search(query, k=60, limit=limit)
+            titles = [r["title"] for r in results]
+            documents = "\n".join(
+                f"{i}. {r['title']} - {r.get('description', '')}"
+                for i, r in enumerate(results, 1)
+            )
+
+            # Print the retrieved movie titles.
+            print("Search Results:")
+            for t in titles:
+                print(f"  - {t}")
+            print()
+
+            # Build a citation-aware prompt instructing the LLM to cite sources.
+            client = _get_client()
+
+            prompt = f"""Answer the query below and give information based on the provided documents.
+
+The answer should be tailored to users of Webflyx, a movie streaming service.
+If not enough information is available to provide a good answer, say so, but give the best answer possible while citing the sources available.
+
+Query: {query}
+
+Documents:
+{documents}
+
+Instructions:
+- Provide a comprehensive answer that addresses the query
+- Cite sources in the format [1], [2], etc. when referencing information
+- If sources disagree, mention the different viewpoints
+- If the answer isn't in the provided documents, say "I don't have enough information"
+- Be direct and informative
+
+Answer:"""
+
+            # Send the prompt to the LLM and print the citation-annotated answer.
+            response = client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            answer = response.choices[0].message.content.strip()
+            print(f"LLM Answer:\n{answer}")
 
         case _:
             parser.print_help()
