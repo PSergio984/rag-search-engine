@@ -4,6 +4,7 @@
 #   rag        — RRF search + LLM-generated answer to the query.
 #   summarize  — RRF search + LLM-generated multi-document summary.
 #   citations  — RRF search + LLM-generated answer with [N] source citations.
+#   question   — RRF search + casual conversational answer.
 #
 # Flow (all commands):
 #   1. Parse the subcommand with a user query and flags.
@@ -61,6 +62,15 @@ def main() -> None:
     )
     cit_parser.add_argument("query", type=str, help="Search query")
     cit_parser.add_argument(
+        "--limit", type=int, default=5, help="Number of results to return"
+    )
+
+    # Question subcommand: casual conversational answer to a user question.
+    q_parser = subparsers.add_parser(
+        "question", help="Answer a question conversationally"
+    )
+    q_parser.add_argument("question", type=str, help="Question to answer")
+    q_parser.add_argument(
         "--limit", type=int, default=5, help="Number of results to return"
     )
 
@@ -201,6 +211,55 @@ Answer:"""
 
             answer = response.choices[0].message.content.strip()
             print(f"LLM Answer:\n{answer}")
+
+        case "question":
+            question = args.question
+            limit = args.limit
+
+            # Load the movie dataset and initialise the hybrid search engine.
+            movies = load_movies()
+            hs = HybridSearch(movies)
+
+            # Perform RRF search and format context for the prompt.
+            results = hs.rrf_search(question, k=60, limit=limit)
+            titles = [r["title"] for r in results]
+            context = "\n".join(
+                f"{i}. {r['title']} - {r.get('description', '')}"
+                for i, r in enumerate(results, 1)
+            )
+
+            # Print the retrieved movie titles.
+            print("Search Results:")
+            for t in titles:
+                print(f"  - {t}")
+            print()
+
+            # Build a casual conversational prompt for the LLM.
+            client = _get_client()
+
+            prompt = f"""Answer the user's question based on the provided movies that are available on Webflyx, a streaming service.
+
+Question: {question}
+
+Documents:
+{context}
+
+Instructions:
+- Answer questions directly and concisely
+- Be casual and conversational
+- Don't be cringe or hype-y
+- Talk like a normal person would in a chat conversation
+
+Answer:"""
+
+            # Send the prompt to the LLM and print the conversational answer.
+            response = client.chat.completions.create(
+                model="openrouter/free",
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            answer = response.choices[0].message.content.strip()
+            print(f"Answer:\n{answer}")
 
         case _:
             parser.print_help()
